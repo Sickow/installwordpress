@@ -1,0 +1,14 @@
+---
+# handlers file for installwordpress
+
+- name: Restart Apache (Ubuntu)
+  ansible.builtin.shell: "service apache2 restart"
+  when: ansible_distribution == "Ubuntu"
+
+- name: Restart Apache (Rocky)
+  ansible.builtin.shell: |
+    killall httpd || true
+    nohup /usr/sbin/httpd -DFOREGROUND > /var/log/httpd_foreground.log 2>&1 &
+  args:
+    executable: /bin/bash
+  when: ansible_distribution == "Rocky"

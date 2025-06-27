@@ -1,0 +1,7 @@
+---
+- name: Déploiement Applicatif automatisé
+  hosts: all
+  become: true
+
+  roles:
+    - installwordpress

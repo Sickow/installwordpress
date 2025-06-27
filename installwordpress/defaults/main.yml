@@ -1,0 +1,12 @@
+---
+# defaults file for installwordpress
+wordpress_site_dir: /var/www/html
+wordpress_url: https://wordpress.org/latest.tar.gz
+
+db_name: wordpress
+db_user: wp_user
+db_password: wp_pass
+db_root_password: root_pass
+secure: ../secure.sql
+create: ../crea.sql
+apache_user: "{{ 'www-data' if ansible_os_family == 'Debian' else 'apache' }}"

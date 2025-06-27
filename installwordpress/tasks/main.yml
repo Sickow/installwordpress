@@ -1,0 +1,185 @@
+---
+# tasks file for installwordpress sur des machines Ubuntu et Rocky
+
+- name: Mise à jour des paquets
+  ansible.builtin.package:
+    name: "*"
+    state: latest
+  when: ansible_distribution in ["Ubuntu", "Rocky"]
+
+# === Installation des dépendances ===
+- name: Installation des paquets nécessaires pour Ubuntu
+  ansible.builtin.apt:
+    name:
+      - apache2
+      - mariadb-server
+      - php
+      - php-mysql
+      - wget
+      - unzip
+      - libapache2-mod-php
+      - python3-pymysql
+    state: present
+    update_cache: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: Installation des paquets nécessaires pour Rocky
+  ansible.builtin.yum:
+    name:
+      - httpd
+      - mariadb-server
+      - php
+      - php-mysqlnd
+      - php-fpm
+      - wget
+      - unzip
+      - python3-PyMySQL
+    state: present
+  when: ansible_distribution == "Rocky"
+
+- name: Créer le dossier /run/php-fpm si manquant
+  ansible.builtin.file:
+    path: /run/php-fpm
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: ansible_distribution == "Rocky"
+
+
+# === PHP-FPM (Rocky) ===
+- name: Lancer PHP-FPM (Rocky) sans systemd
+  ansible.builtin.shell: "nohup php-fpm --fpm-config /etc/php-fpm.conf &"
+  async: 10
+  poll: 0
+  when: ansible_distribution == "Rocky"
+
+- name: Attendre que le socket php-fpm soit disponible
+  ansible.builtin.wait_for:
+    path: /run/php-fpm/www.sock
+    state: present
+    timeout: 30
+  when: ansible_distribution == "Rocky"
+
+# === MariaDB ===
+- name: S'assurer que /var/lib/mysql appartient à mysql
+  ansible.builtin.file:
+    path: /var/lib/mysql
+    owner: mysql
+    group: mysql
+    recurse: true
+  when: ansible_distribution in ["Ubuntu", "Rocky"]
+
+- name: Initialiser MariaDB si nécessaire
+  ansible.builtin.command: >
+    mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
+  args:
+    creates: /var/lib/mysql/mysql
+  when: ansible_distribution in ["Ubuntu", "Rocky"]
+
+- name: Démarrer MariaDB sans systemd (via mysqld_safe)
+  ansible.builtin.shell: "nohup mysqld_safe --user=mysql &"
+  async: 10
+  poll: 0
+  when: ansible_distribution in ["Ubuntu", "Rocky"]
+
+- name: Pause pour laisser MariaDB démarrer
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Attente du démarrage de MariaDB (port 3306)
+  ansible.builtin.wait_for:
+    port: 3306
+    delay: 5
+    timeout: 60
+    state: started
+
+# === Apache ===
+- name: Démarrer Apache sans systemd pour Ubuntu
+  ansible.builtin.shell: "service apache2 start"
+  args:
+    creates: /var/run/apache2/apache2.pid
+  when: ansible_distribution == "Ubuntu"
+
+- name: Démarrer Apache sans systemd pour Rocky
+  ansible.builtin.shell: "nohup /usr/sbin/httpd -DFOREGROUND &"
+  args:
+    creates: /var/run/httpd/httpd.pid
+  async: 10
+  poll: 0
+  when: ansible_distribution == "Rocky"
+
+# === Base de données WordPress ===
+- name: Création de la base de données WordPress
+  community.mysql.mysql_db:
+    name: "{{ db_name }}"
+    state: present
+    login_user: root
+    login_password: "{{ db_root_password }}"
+
+- name: Création de l'utilisateur MySQL WordPress
+  community.mysql.mysql_user:
+    name: "{{ db_user }}"
+    password: "{{ db_password }}"
+    priv: "{{ db_name }}.*:ALL"
+    host: "localhost"
+    state: present
+    login_user: root
+    login_password: "{{ db_root_password }}"
+
+# === WordPress - Déploiement ===
+- name: Télécharger WordPress (.tar.gz)
+  ansible.builtin.get_url:
+    url: "{{ wordpress_url }}"
+    dest: /tmp/wordpress.tar.gz
+    mode: '0755'
+
+- name: Supprimer la page d'accueil par défaut d'Apache
+  ansible.builtin.file:
+    path: "{{ wordpress_site_dir }}/index.html"
+    state: absent
+
+- name: Décompresser WordPress
+  ansible.builtin.unarchive:
+    src: /tmp/wordpress.tar.gz
+    dest: "{{ wordpress_site_dir }}"
+    remote_src: yes
+    extra_opts: [--strip-components=1]
+
+- name: Créer le fichier wp-config.php
+  ansible.builtin.template:
+    src: wp-config.php.j2
+    dest: "{{ wordpress_site_dir }}/wp-config.php"
+    mode: '0640'
+    owner: "{{ apache_user }}"
+    group: "{{ apache_user }}"
+
+# === Configuration Apache ===
+- name: Copier wordpress.conf sur Rocky
+  ansible.builtin.copy:
+    src: wordpress_rocky.conf
+    dest: /etc/httpd/conf.d/wordpress.conf
+    mode: '0644'
+  when: ansible_distribution == "Rocky"
+  notify: Restart Apache
+
+- name: Copier la configuration Apache pour WordPress (Ubuntu)
+  ansible.builtin.copy:
+    src: wordpress.conf
+    dest: /etc/apache2/sites-available/wordpress.conf
+    mode: '0644'
+  when: ansible_distribution == "Ubuntu"
+  notify: Reload Apache
+
+- name: Activer le site WordPress (Ubuntu)
+  ansible.builtin.command: a2ensite wordpress.conf
+  when: ansible_distribution == "Ubuntu"
+
+- name: Activer le module rewrite (Ubuntu)
+  ansible.builtin.command: a2enmod rewrite
+  when: ansible_distribution == "Ubuntu"
+
+# === Fin ===
+- name: Afficher l'URL d'accès à WordPress
+  ansible.builtin.debug:
+    msg: "WordPress est installé sur http://localhost"
